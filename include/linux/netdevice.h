@@ -1377,6 +1377,8 @@ struct net_device_ops {
 						struct xdp_frame **xdp,
 						u32 flags);
 	void			(*ndo_xdp_flush)(struct net_device *dev);
+	int			(*ndo_xsk_async_xmit)(struct net_device *dev,
+						      u32 queue_id);
 };
 
 /**
