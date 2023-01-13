@@ -477,7 +477,10 @@ struct goodix_ts_core {
 	int aod_status;
 	int fod_pressed;
 	int fod_test;
-	int double_wakeup;
+	int udfps_pressed;
+	int udfps_enabled;
+	int double_tap_pressed;
+	int double_tap_enabled;
 	int result_type;
 	struct class *gtp_tp_class;
 	struct device *gtp_touch_dev;

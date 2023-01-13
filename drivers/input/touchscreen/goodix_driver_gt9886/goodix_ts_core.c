@@ -42,22 +42,6 @@
 #endif
 #include <linux/backlight.h>
 
-#define INPUT_EVENT_START 0
-#define INPUT_EVENT_SENSITIVE_MODE_OFF 0
-#define INPUT_EVENT_SENSITIVE_MODE_ON 1
-#define INPUT_EVENT_STYLUS_MODE_OFF 2
-#define INPUT_EVENT_STYLUS_MODE_ON 3
-#define INPUT_EVENT_WAKUP_MODE_OFF 4
-#define INPUT_EVENT_WAKUP_MODE_ON 5
-#define INPUT_EVENT_COVER_MODE_OFF 6
-#define INPUT_EVENT_COVER_MODE_ON 7
-#define INPUT_EVENT_SLIDE_FOR_VOLUME 8
-#define INPUT_EVENT_DOUBLE_TAP_FOR_VOLUME 9
-#define INPUT_EVENT_SINGLE_TAP_FOR_VOLUME 10
-#define INPUT_EVENT_LONG_SINGLE_TAP_FOR_VOLUME 11
-#define INPUT_EVENT_PALM_OFF 12
-#define INPUT_EVENT_PALM_ON 13
-#define INPUT_EVENT_END 13
 #define IS_USB_EXIST 0x06
 #define IS_USB_NOT_EXIST 0x07
 
@@ -636,6 +620,62 @@ static ssize_t goodix_ts_irq_info_store(struct device *dev,
 	return count;
 }
 
+static ssize_t udfps_pressed_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	return scnprintf(buf, 10, "%i\n", core_data->udfps_pressed);
+}
+
+static ssize_t udfps_enabled_store(struct device *dev,
+				  struct device_attribute *attr, const char *buf,
+				  size_t count)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	core_data->udfps_enabled = buf[0] != '0';
+
+	core_data->gesture_enabled = core_data->double_tap_enabled | core_data->udfps_enabled;
+
+	goodix_check_gesture_stat(true);
+
+	return count;
+}
+
+static ssize_t udfps_enabled_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	return scnprintf(buf, 10, "%i\n", core_data->udfps_enabled);
+}
+
+static ssize_t double_tap_pressed_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	return scnprintf(buf, 10, "%i\n", core_data->double_tap_pressed);
+}
+
+static ssize_t double_tap_enabled_store(struct device *dev,
+				  struct device_attribute *attr, const char *buf,
+				  size_t count)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	core_data->double_tap_enabled = buf[0] != '0';
+
+	core_data->gesture_enabled = core_data->double_tap_enabled | core_data->udfps_enabled;
+
+	goodix_check_gesture_stat(true);
+
+	return count;
+}
+
+static ssize_t double_tap_enabled_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct goodix_ts_core *core_data = dev_get_drvdata(dev);
+	return scnprintf(buf, 10, "%i\n", core_data->double_tap_enabled);
+}
+
 static DEVICE_ATTR(extmod_info, S_IRUGO, goodix_ts_extmod_show, NULL);
 static DEVICE_ATTR(driver_info, S_IRUGO, goodix_ts_driver_info_show, NULL);
 static DEVICE_ATTR(chip_info, S_IRUGO, goodix_ts_chip_info_show, NULL);
@@ -645,6 +685,10 @@ static DEVICE_ATTR(send_cfg, S_IWUSR | S_IWGRP, NULL, goodix_ts_send_cfg_store);
 static DEVICE_ATTR(read_cfg, S_IRUGO, goodix_ts_read_cfg_show, NULL);
 static DEVICE_ATTR(irq_info, S_IRUGO | S_IWUSR | S_IWGRP,
 		   goodix_ts_irq_info_show, goodix_ts_irq_info_store);
+static DEVICE_ATTR(udfps_pressed, 0660, udfps_pressed_show, NULL);
+static DEVICE_ATTR(udfps_enabled, 0664, udfps_enabled_show, udfps_enabled_store);
+static DEVICE_ATTR(double_tap_pressed, 0660, double_tap_pressed_show, NULL);
+static DEVICE_ATTR(double_tap_enabled, 0664, double_tap_enabled_show, double_tap_enabled_store);
 
 static struct attribute *sysfs_attrs[] = {
 	&dev_attr_extmod_info.attr,
@@ -655,6 +699,10 @@ static struct attribute *sysfs_attrs[] = {
 	&dev_attr_send_cfg.attr,
 	&dev_attr_read_cfg.attr,
 	&dev_attr_irq_info.attr,
+	&dev_attr_udfps_pressed.attr,
+	&dev_attr_udfps_enabled.attr,
+	&dev_attr_double_tap_pressed.attr,
+	&dev_attr_double_tap_enabled.attr,
 	NULL,
 };
 
@@ -1219,9 +1267,6 @@ static ssize_t gtp_fod_status_store(struct device *dev,
 	sscanf(buf, "%u", &core_data->fod_ok);
 
 	//goodix_ts_input_report(core_data->input_dev,&ts_event->event_data.touch_data);
-	core_data->gesture_enabled = core_data->double_wakeup |
-				     core_data->fod_status;
-	goodix_check_gesture_stat(!!core_data->fod_status);
 
 	return count;
 }
@@ -1234,55 +1279,6 @@ static DEVICE_ATTR(fod_test, (S_IRUGO | S_IWUSR | S_IWGRP), NULL,
 
 static DEVICE_ATTR(touch_suspend_notify, (S_IRUGO | S_IRGRP),
 		   gtp_touch_suspend_notify_show, NULL);
-
-static void goodix_switch_mode_work(struct work_struct *work)
-{
-	struct goodix_mode_switch *ms =
-		container_of(work, struct goodix_mode_switch, switch_mode_work);
-
-	struct goodix_ts_core *info = ms->info;
-	unsigned char value = ms->mode;
-
-	if (value >= INPUT_EVENT_WAKUP_MODE_OFF &&
-	    value <= INPUT_EVENT_WAKUP_MODE_ON) {
-		info->double_wakeup = value - INPUT_EVENT_WAKUP_MODE_OFF;
-		info->gesture_enabled = info->double_wakeup | info->fod_status;
-		/*goodix_gesture_enable(!!info->gesture_enabled);*/
-	}
-}
-
-static int goodix_input_event(struct input_dev *dev, unsigned int type,
-			      unsigned int code, int value)
-{
-	struct goodix_ts_core *core_data = input_get_drvdata(dev);
-	struct goodix_mode_switch *ms;
-
-	if (!core_data) {
-		ts_err("core_data is NULL");
-		return 0;
-	}
-
-	if (type == EV_SYN && code == SYN_CONFIG) {
-		if (value >= INPUT_EVENT_START && value <= INPUT_EVENT_END) {
-			ms = (struct goodix_mode_switch *)kmalloc(
-				sizeof(struct goodix_mode_switch), GFP_ATOMIC);
-			if (ms != NULL) {
-				ms->info = core_data;
-				ms->mode = (unsigned char)value;
-				INIT_WORK(&ms->switch_mode_work,
-					  goodix_switch_mode_work);
-				schedule_work(&ms->switch_mode_work);
-			} else {
-				ts_err("failed in allocating memory for switching mode");
-				return -ENOMEM;
-			}
-		} else {
-			ts_err("Invalid event value");
-			return -EINVAL;
-		}
-	}
-	return 0;
-}
 
 /**
  * goodix_input_set_params - set input parameters
@@ -1339,7 +1335,6 @@ int goodix_ts_input_dev_config(struct goodix_ts_core *core_data)
 	input_dev->id.product = 0xDEAD;
 	input_dev->id.vendor = 0xBEEF;
 	input_dev->id.version = 10427;
-	input_dev->event = goodix_input_event;
 
 	__set_bit(EV_SYN, input_dev->evbit);
 	__set_bit(EV_KEY, input_dev->evbit);
@@ -1607,14 +1602,14 @@ int goodix_ts_suspend(struct goodix_ts_core *core_data)
 			r = ext_module->funcs->before_suspend(core_data,
 							      ext_module);
 			if (r == EVT_CANCEL_SUSPEND) {
-				if (core_data->double_wakeup &&
-				    core_data->fod_status) {
+				if (core_data->double_tap_enabled &&
+				    core_data->udfps_enabled) {
 					atomic_set(&core_data->suspend_stat,
 						   TP_GESTURE_DBCLK_FOD);
-				} else if (core_data->double_wakeup) {
+				} else if (core_data->double_tap_enabled) {
 					atomic_set(&core_data->suspend_stat,
 						   TP_GESTURE_DBCLK);
-				} else if (core_data->fod_status) {
+				} else if (core_data->udfps_enabled) {
 					atomic_set(&core_data->suspend_stat,
 						   TP_GESTURE_FOD);
 				}
@@ -1833,9 +1828,12 @@ int goodix_ts_fb_notifier_callback(struct notifier_block *self,
 				   &core_data->suspend_work);
 		} else if (event == MSM_DRM_EVENT_BLANK &&
 			   blank == MSM_DRM_BLANK_UNBLANK) {
-			//if (!atomic_read(&core_data->suspend_stat))
 			ts_info("core_data->suspend_stat = %d\n",
 				atomic_read(&core_data->suspend_stat));
+			if (!atomic_read(&core_data->suspend_stat))
+				return 0;
+			core_data->udfps_pressed = 0;
+			core_data->double_tap_pressed = 0;
 			ts_info("touchpanel resume");
 			queue_work(core_data->event_wq,
 				   &core_data->resume_work);
