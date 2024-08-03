@@ -208,8 +208,6 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 		goto error;
 	}
 
-	panel->bl_config.bl_level = bl_lvl;
-
 	/* scale backlight */
 	bl_scale = panel->bl_config.bl_scale;
 	bl_temp = bl_lvl * bl_scale / MAX_BL_SCALE_LEVEL;
@@ -232,6 +230,18 @@ int dsi_display_set_backlight(struct drm_connector *connector,
 	if (rc)
 		pr_err("unable to set backlight\n");
 
+	if (bl_lvl == 4095 && panel->bl_config.bl_level <= 2047)
+	{
+		panel->hbm_mode = 1;
+		rc = dsi_panel_apply_hbm_mode(panel);
+	}
+	else if (bl_lvl <= 2047 && panel->bl_config.bl_level == 4095)
+	{
+		panel->hbm_mode = 0;
+		rc = dsi_panel_apply_hbm_mode(panel);
+	}
+
+	panel->bl_config.bl_level = bl_lvl;
 	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
 			DSI_CORE_CLK, DSI_CLK_OFF);
 	if (rc) {
@@ -1058,6 +1068,46 @@ static bool dsi_display_get_cont_splash_status(struct dsi_display *display)
 	return true;
 }
 
+static u32 interpolate(uint32_t x, uint32_t xa, uint32_t xb,
+		uint32_t ya, uint32_t yb)
+{
+	return ya + (yb - ya) * (x - xa) / (xb - xa);
+}
+
+struct blbl {
+        u32 bl;
+        u32 aod_bl;
+};
+
+struct blbl aod_bl_lut[] = {
+	{0, 1},
+	{10, 1},
+	{40, 9},
+	{90, 30},
+	{120, 40},
+};
+
+u32 dsi_panel_get_aod_bl(struct dsi_display *display) {
+	int i;
+	//cached value is better than reading display->panel->bl_config.bl_level
+	u32 cur_bl = dsi_panel_backlight_get();
+
+	for (i = 0; i < 5; i++)
+                if (aod_bl_lut[i].bl >= cur_bl)
+                        break;
+        if (i == 0)
+                return aod_bl_lut[i].aod_bl;
+
+        if (i == 4)
+                return aod_bl_lut[i - 1].aod_bl;
+
+        return interpolate(cur_bl,
+                           aod_bl_lut[i - 1].bl,
+                           aod_bl_lut[i].bl,
+                           aod_bl_lut[i - 1].aod_bl,
+                           aod_bl_lut[i].aod_bl);
+}
+
 int dsi_display_set_power(struct drm_connector *connector,
 		int power_mode, void *disp)
 {
@@ -1081,6 +1131,8 @@ int dsi_display_set_power(struct drm_connector *connector,
 		break;
 	case SDE_MODE_DPMS_LP2:
 		msm_drm_notifier_call_chain(MSM_DRM_EARLY_EVENT_BLANK, &notify_data);
+		dsi_panel_set_backlight(display->panel, dsi_panel_get_aod_bl(display));
+		usleep_range(20000, 30000);
 		rc = dsi_panel_set_lp2(display->panel);
 		msm_drm_notifier_call_chain(MSM_DRM_EVENT_BLANK, &notify_data);
 		break;
@@ -5047,23 +5099,6 @@ error:
 	return rc;
 }
 
-static ssize_t sysfs_fod_ui_read(struct device *dev,
-	struct device_attribute *attr, char *buf)
-{
-	struct dsi_display *display;
-	bool status;
-
-	display = dev_get_drvdata(dev);
-	if (!display) {
-		pr_err("Invalid display\n");
-		return -EINVAL;
-	}
-
-	status = atomic_read(&display->fod_ui);
-
-	return snprintf(buf, PAGE_SIZE, "%d\n", status);
-}
-
 static ssize_t sysfs_hbm_read(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -5082,6 +5117,9 @@ static ssize_t sysfs_hbm_write(struct device *dev,
 
 	if (!display->panel)
 		return -EINVAL;
+
+        if (display->panel->bl_config.bl_level > 2047)
+                return count;
 
 	ret = kstrtoint(buf, 10, &hbm_mode);
 	if (ret) {
@@ -5119,16 +5157,11 @@ error:
 	return ret == 0 ? count : ret;
 }
 
-static DEVICE_ATTR(fod_ui, 0444,
-			sysfs_fod_ui_read,
-			NULL);
-
 static DEVICE_ATTR(hbm, 0644,
 			sysfs_hbm_read,
 			sysfs_hbm_write);
 
 static struct attribute *display_fs_attrs[] = {
-	&dev_attr_fod_ui.attr,
 	&dev_attr_hbm.attr,
 	NULL,
 };
@@ -5163,13 +5196,6 @@ static int dsi_display_sysfs_deinit(struct dsi_display *display)
 
 	return 0;
 
-}
-
-void dsi_display_set_fod_ui(struct dsi_display *display, bool status)
-{
-	struct device *dev = &display->pdev->dev;
-	atomic_set(&display->fod_ui, status);
-	sysfs_notify(&dev->kobj, NULL, "fod_ui");
 }
 
 /**
@@ -5468,7 +5494,6 @@ static void dsi_display_unbind(struct device *dev,
 	}
 
 	atomic_set(&display->clkrate_change_pending, 0);
-	atomic_set(&display->fod_ui, false);
 	(void)dsi_display_sysfs_deinit(display);
 	(void)dsi_display_debugfs_deinit(display);
 
@@ -7050,7 +7075,7 @@ static void dsi_display_handle_fifo_overflow(struct work_struct *work)
 	 * Add sufficient delay to make sure
 	 * pixel transmission has started
 	 */
-	udelay(200);
+	usleep_range(180, 220);
 end:
 	dsi_display_clk_ctrl(display->dsi_clk_handle,
 			DSI_ALL_CLKS, DSI_CLK_OFF);
@@ -7128,7 +7153,7 @@ static void dsi_display_handle_lp_rx_timeout(struct work_struct *work)
 	 * Add sufficient delay to make sure
 	 * pixel transmission as started
 	 */
-	udelay(200);
+	usleep_range(180, 220);
 
 end:
 	dsi_display_clk_ctrl(display->dsi_clk_handle,

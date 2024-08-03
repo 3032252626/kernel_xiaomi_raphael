@@ -119,6 +119,7 @@ struct dsi_backlight_config {
 	u32 bl_scale;
 	u32 bl_scale_ad;
 	bool bl_inverted_dbv;
+	u32 real_bl_level;
 
 	int en_gpio;
 	bool dcs_type_ss;
@@ -171,8 +172,8 @@ struct drm_panel_esd_config {
 
 #define BRIGHTNESS_ALPHA_PAIR_LEN 2
 struct brightness_alpha_pair {
-	u32 brightness;
-	u32 alpha;
+	u16 brightness;
+	u8 alpha;
 };
 
 struct dsi_panel {
@@ -226,12 +227,23 @@ struct dsi_panel {
 	int power_mode;
 	enum dsi_panel_physical_type panel_type;
 
-	struct brightness_alpha_pair *fod_dim_lut;
 	u32 fod_dim_lut_count;
-
 	int hbm_mode;
-
 	bool resend_ea;
+
+	struct brightness_alpha_pair *fod_dim_lut;
+	struct brightness_alpha_pair *dc_dim_lut;
+	unsigned int fod_dim_lut_len;
+	unsigned int dc_dim_lut_len;
+	u8 fod_dim_alpha;
+	u8 dc_dim_alpha;
+	bool fod_hbm_enabled;
+	bool fod_ui;
+	bool force_fod_ui;
+	bool force_fod_dim_alpha;
+	bool dc_dim;
+	bool force_dc_dim_alpha;
+	bool was_dc_dim;
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -352,11 +364,16 @@ int dsi_panel_parse_esd_reg_read_configs(struct dsi_panel *panel);
 
 void dsi_panel_ext_bridge_put(struct dsi_panel *panel);
 
-int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status);
-
-u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
+u8 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
+u8 dsi_panel_get_dc_dim_alpha(struct dsi_panel *panel);
 
 int dsi_panel_apply_hbm_mode(struct dsi_panel *panel);
+
+int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status);
+bool dsi_panel_get_fod_ui(struct dsi_panel *panel);
+void dsi_panel_set_fod_ui(struct dsi_panel *panel, bool status);
+bool dsi_panel_get_force_fod_ui(struct dsi_panel *panel);
+bool dsi_panel_get_dc_dim(struct dsi_panel *panel);
 
 void dsi_panel_calc_dsi_transfer_time(struct dsi_host_common_cfg *config,
 		struct dsi_display_mode *mode, u32 frame_threshold_us);

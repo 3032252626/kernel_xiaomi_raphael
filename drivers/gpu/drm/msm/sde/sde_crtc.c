@@ -1965,9 +1965,8 @@ static void _sde_crtc_set_src_split_order(struct drm_crtc *crtc,
 {
 	struct plane_state *prv_pstate, *cur_pstate, *nxt_pstate;
 	struct sde_kms *sde_kms;
-	struct sde_rect left_rect, right_rect;
-	int32_t left_pid, right_pid;
-	int32_t stage;
+	struct sde_rect;
+	uint32_t prev_flags, cur_flags = 0;
 	int i;
 
 	sde_kms = _sde_crtc_get_kms(crtc);
@@ -1984,6 +1983,9 @@ static void _sde_crtc_set_src_split_order(struct drm_crtc *crtc,
 		cur_pstate = &pstates[i];
 		nxt_pstate = ((i + 1) < cnt) ? &pstates[i + 1] : NULL;
 
+		prev_flags = cur_flags;
+		cur_flags = cur_pstate->sde_pstate->pipe_order_flags;
+
 		if ((!prv_pstate) || (prv_pstate->stage != cur_pstate->stage)) {
 			/*
 			 * reset if prv or nxt pipes are not in the same stage
@@ -1991,41 +1993,29 @@ static void _sde_crtc_set_src_split_order(struct drm_crtc *crtc,
 			 */
 			if ((!nxt_pstate)
 				    || (nxt_pstate->stage != cur_pstate->stage))
-				cur_pstate->sde_pstate->pipe_order_flags = 0;
+				if (cur_flags != 0) {
+					cur_pstate->sde_pstate->pipe_order_flags = 0;
+					cur_pstate->sde_pstate->dirty |= SDE_PLANE_DIRTY_SRC_SPLIT_ORDER;
+				}
 
 			continue;
 		}
 
-		stage = cur_pstate->stage;
-
-		left_pid = prv_pstate->sde_pstate->base.plane->base.id;
-		POPULATE_RECT(&left_rect, prv_pstate->drm_pstate->crtc_x,
-			prv_pstate->drm_pstate->crtc_y,
-			prv_pstate->drm_pstate->crtc_w,
-			prv_pstate->drm_pstate->crtc_h, false);
-
-		right_pid = cur_pstate->sde_pstate->base.plane->base.id;
-		POPULATE_RECT(&right_rect, cur_pstate->drm_pstate->crtc_x,
-			cur_pstate->drm_pstate->crtc_y,
-			cur_pstate->drm_pstate->crtc_w,
-			cur_pstate->drm_pstate->crtc_h, false);
-
-		if (right_rect.x < left_rect.x) {
-			swap(left_pid, right_pid);
-			swap(left_rect, right_rect);
-			swap(prv_pstate, cur_pstate);
+		if (cur_pstate->drm_pstate->crtc_x < prv_pstate->drm_pstate->crtc_x) {
+			prv_pstate->sde_pstate->pipe_order_flags = SDE_SSPP_RIGHT;
+			cur_pstate->sde_pstate->pipe_order_flags = 0;
+		} else {
+			prv_pstate->sde_pstate->pipe_order_flags = 0;
+			cur_pstate->sde_pstate->pipe_order_flags = SDE_SSPP_RIGHT;
 		}
 
-		cur_pstate->sde_pstate->pipe_order_flags = SDE_SSPP_RIGHT;
-		prv_pstate->sde_pstate->pipe_order_flags = 0;
-	}
+		prv_pstate->sde_pstate->dirty &= ~SDE_PLANE_DIRTY_SRC_SPLIT_ORDER;
 
-	for (i = 0; i < cnt; i++) {
-		cur_pstate = &pstates[i];
-		sde_plane_setup_src_split_order(
-			cur_pstate->drm_pstate->plane,
-			cur_pstate->sde_pstate->multirect_index,
-			cur_pstate->sde_pstate->pipe_order_flags);
+		if (prev_flags != prv_pstate->sde_pstate->pipe_order_flags)
+			prv_pstate->sde_pstate->dirty |= SDE_PLANE_DIRTY_SRC_SPLIT_ORDER;
+
+		if (cur_flags != cur_pstate->sde_pstate->pipe_order_flags)
+			cur_pstate->sde_pstate->dirty |= SDE_PLANE_DIRTY_SRC_SPLIT_ORDER;
 	}
 }
 
@@ -2168,10 +2158,6 @@ static void _sde_crtc_blend_setup_mixer(struct drm_crtc *crtc,
 		for (i = 0; i < cstate->num_dim_layers; i++)
 			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
 					mixer, &cstate->dim_layer[i]);
-
-		if (cstate->fod_dim_layer)
-			_sde_crtc_setup_dim_layer_cfg(crtc, sde_crtc,
-					mixer, cstate->fod_dim_layer);
 	}
 
 	_sde_crtc_program_lm_output_roi(crtc);
@@ -5280,87 +5266,72 @@ static int _sde_crtc_check_secure_state(struct drm_crtc *crtc,
 	return 0;
 }
 
-static struct sde_hw_dim_layer* sde_crtc_setup_fod_dim_layer(
-		struct sde_crtc_state *cstate,
-		uint32_t stage)
+static void sde_crtc_dc_dim_atomic_check(struct sde_crtc_state *cstate,
+			  struct plane_state *pstates, int cnt)
 {
-	struct drm_crtc_state *crtc_state = &cstate->base;
-	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
-	struct sde_hw_dim_layer *dim_layer = NULL;
-	struct dsi_display *display;
-	struct sde_kms *kms;
-	uint32_t layer_stage;
-	uint32_t alpha;
+	struct dsi_display *display = get_main_display();
+	unsigned int dc_dim_plane_idx, plane_idx;
+	bool dc_dim;
+	u8 alpha = 0;
 
-	kms = _sde_crtc_get_kms(crtc_state->crtc);
-	if (!kms || !kms->catalog) {
-		SDE_ERROR("Invalid kms\n");
-		goto error;
+	for (plane_idx = 0; plane_idx < cnt; plane_idx++)
+		if (sde_plane_is_dc_dim_layer(pstates[plane_idx].drm_pstate))
+			break;
+
+	dc_dim_plane_idx = plane_idx;
+
+	dc_dim = dsi_panel_get_dc_dim(display->panel);
+
+	if (dc_dim_plane_idx != cnt || dc_dim)
+		alpha = dsi_panel_get_dc_dim_alpha(display->panel);
+
+	cstate->dc_dim_alpha = alpha;
+
+	for (plane_idx = 0; plane_idx < cnt; plane_idx++) {
+		if (plane_idx == dc_dim_plane_idx)
+			continue;
+
+		sde_plane_set_dc_dim_alpha(pstates[plane_idx].sde_pstate,
+			display->panel->hbm_mode ? 0 : alpha);
 	}
-
-	layer_stage = SDE_STAGE_0 + stage;
-	if (layer_stage >= kms->catalog->mixer[0].sblk->maxblendstages) {
-		SDE_ERROR("Stage too large %u vs max %u\n", layer_stage,
-			kms->catalog->mixer[0].sblk->maxblendstages);
-		goto error;
-	}
-
-	if (cstate->num_dim_layers == SDE_MAX_DIM_LAYERS) {
-		SDE_ERROR("Max dim layers reached\n");
-		goto error;
-	}
-
-	display = get_main_display();
-	if (!display || !display->panel) {
-		SDE_ERROR("Invalid primary display\n");
-		goto error;
-	}
-
-	mutex_lock(&display->panel->panel_lock);
-	alpha = dsi_panel_get_fod_dim_alpha(display->panel);
-	mutex_unlock(&display->panel->panel_lock);
-
-	dim_layer = &cstate->dim_layer[cstate->num_dim_layers];
-	dim_layer->flags = SDE_DRM_DIM_LAYER_INCLUSIVE;
-	dim_layer->stage = layer_stage;
-	dim_layer->rect.x = 0;
-	dim_layer->rect.y = 0;
-	dim_layer->rect.w = mode->hdisplay;
-	dim_layer->rect.h = mode->vdisplay;
-	dim_layer->color_fill =
-			(struct sde_mdss_color) {0, 0, 0, alpha};
-
-error:
-	return dim_layer;
 }
 
-static void sde_crtc_fod_atomic_check(struct sde_crtc_state *cstate,
-		struct plane_state *pstates, int cnt)
+static inline void sde_crtc_fod_atomic_check(struct sde_crtc_state *cstate,
+			  struct plane_state *pstates, int cnt)
 {
-	uint32_t dim_layer_stage;
-	int plane_idx;
+	struct dsi_display *display = get_main_display();
+	unsigned int fod_plane_idx, plane_idx;
+	bool force_fod_ui;
+	u8 alpha = 0;
 
 	for (plane_idx = 0; plane_idx < cnt; plane_idx++)
 		if (sde_plane_is_fod_layer(pstates[plane_idx].drm_pstate))
 			break;
 
-	if (plane_idx == cnt) {
-		cstate->fod_dim_layer = NULL;
-	} else {
-		dim_layer_stage = pstates[plane_idx].stage;
-		cstate->fod_dim_layer = sde_crtc_setup_fod_dim_layer(cstate,
-				dim_layer_stage);
+	fod_plane_idx = plane_idx;
+
+	force_fod_ui = dsi_panel_get_force_fod_ui(display->panel);
+
+	if (fod_plane_idx != cnt || force_fod_ui) {
+		struct dsi_display *display = get_main_display();
+		alpha = dsi_panel_get_fod_dim_alpha(display->panel);
 	}
 
-	if (!cstate->fod_dim_layer)
-		return;
+	cstate->fod_dim_alpha = alpha;
 
-	for (plane_idx = 0; plane_idx < cnt; plane_idx++)
-		if (pstates[plane_idx].stage >= dim_layer_stage)
-			pstates[plane_idx].stage++;
+	for (plane_idx = 0; plane_idx < cnt; plane_idx++) {
+		if (plane_idx == fod_plane_idx)
+			continue;
+
+		if (display->panel->hbm_mode)
+			return;
+
+		sde_plane_set_fod_dim_alpha(pstates[plane_idx].sde_pstate,
+					    alpha);
+	}
 }
 
-static int sde_crtc_atomic_check(struct drm_crtc *crtc,
+static inline int sde_crtc_atomic_check(struct drm_crtc *crtc,
 		struct drm_crtc_state *state)
 {
 	struct drm_device *dev;
@@ -5554,6 +5525,7 @@ static int sde_crtc_atomic_check(struct drm_crtc *crtc,
 			sde_plane_clear_multirect(pipe_staged[i]);
 		}
 	}
+	sde_crtc_dc_dim_atomic_check(cstate, pstates, cnt);
 
 	sde_crtc_fod_atomic_check(cstate, pstates, cnt);
 
@@ -5662,6 +5634,13 @@ end:
 	kfree(multirect_plane);
 	_sde_crtc_rp_free_unused(&cstate->rp);
 	return rc;
+}
+
+bool sde_crtc_is_fod_enabled(struct drm_crtc_state *state)
+{
+	struct sde_crtc_state *cstate = to_sde_crtc_state(state);
+
+	return cstate->fod_dim_alpha != 0;
 }
 
 /**
