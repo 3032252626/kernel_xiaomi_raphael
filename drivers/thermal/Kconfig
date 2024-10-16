@@ -192,6 +192,7 @@ config DEVFREQ_THERMAL
 
 config THERMAL_EMULATION
 	bool "Thermal emulation mode support"
+	default y
 	help
 	  Enable this option to make a emul_temp sysfs node in thermal zone
 	  directory to support temperature emulation. With emulation sysfs node,

@@ -1,0 +1,5 @@
+config USB_OVERHEAT_MITIGATION
+	tristate "Google USB Overheat Mitigation"
+	default y
+	help
+	  Say Y here to enable Google USB overheat mitigation
