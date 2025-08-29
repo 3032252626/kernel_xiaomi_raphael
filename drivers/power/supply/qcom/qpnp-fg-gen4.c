@@ -624,6 +624,30 @@ static int fg_gen4_get_batt_id(struct fg_gen4_chip *chip)
 	return 0;
 }
 
+static int fg_gen4_store_nominal_capacity(struct fg_gen4_chip *chip,
+					int64_t nom_cap_uah)
+{
+	struct fg_dev *fg = &chip->fg;
+	int rc;
+	u8 buf[2];
+	int32_t cap_mah;
+
+	cap_mah = nom_cap_uah / 1000;
+	buf[0] = cap_mah & 0xFF;
+	buf[1] = (cap_mah >> 8) & 0xFF;
+
+	rc = fg_sram_write(fg, NOM_CAP_WORD, NOM_CAP_OFFSET, buf, 2,
+			   FG_IMA_DEFAULT);
+	if (rc < 0) {
+		pr_err("Error in writing %04x[%d] rc=%d\n", NOM_CAP_WORD,
+		       NOM_CAP_OFFSET, rc);
+		return rc;
+	}
+
+	fg_dbg(fg, FG_CAP_LEARN, "Written nom_cap_uah: %lld\n", nom_cap_uah);
+	return 0;
+}
+
 static int fg_gen4_get_nominal_capacity(struct fg_gen4_chip *chip,
 					int64_t *nom_cap_uah)
 {
@@ -1785,13 +1809,6 @@ static int fg_gen4_get_batt_profile(struct fg_dev *fg)
 	if (rc < 0) {
 		pr_err("battery cc_cv threshold unavailable, rc:%d\n", rc);
 		fg->bp.vbatt_full_mv = -EINVAL;
-	}
-
-	rc = of_property_read_u32(profile_node, "qcom,nom-batt-capacity-mah",
-			&fg->bp.nom_cap_uah);
-	if (rc < 0) {
-		pr_err("battery nominal capacity unavailable, rc:%d\n", rc);
-		fg->bp.nom_cap_uah = -EINVAL;
 	}
 
 	if (of_find_property(profile_node, "qcom,therm-coefficients", &len)) {
@@ -4591,13 +4608,9 @@ static int fg_psy_get_property(struct power_supply *psy,
 			pval->intval = (int)temp;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
-		if (-EINVAL != fg->bp.nom_cap_uah) {
-			pval->intval = fg->bp.nom_cap_uah * 1000;
-		} else {
 			rc = fg_gen4_get_nominal_capacity(chip, &temp);
 			if (!rc)
 				pval->intval = (int)temp;
-		}
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
 		rc = fg_gen4_get_charge_counter(chip, &pval->intval);
@@ -4700,6 +4713,13 @@ static int fg_psy_set_property(struct power_supply *psy,
 		rc = fg_gen4_store_learned_capacity(chip, pval->intval);
 		if (!rc)
 			chip->cl->learned_cap_uah = pval->intval;
+		mutex_unlock(&chip->cl->lock);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		mutex_lock(&chip->cl->lock);
+		rc = fg_gen4_store_nominal_capacity(chip, pval->intval);
+		if (!rc)
+			chip->cl->nom_cap_uah = pval->intval;
 		mutex_unlock(&chip->cl->lock);
 		break;
 	case POWER_SUPPLY_PROP_CC_STEP:

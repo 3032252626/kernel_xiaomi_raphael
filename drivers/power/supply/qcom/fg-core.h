@@ -345,7 +345,6 @@ struct fg_batt_props {
 	int		vbatt_full_mv;
 	int		ffc_vbatt_full_mv;
 	int		fastchg_curr_ma;
-	int		nom_cap_uah;
 	int		*therm_coeffs;
 	int		therm_ctr_offset;
 	int		therm_pull_up_kohms;
