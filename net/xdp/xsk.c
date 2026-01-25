@@ -30,6 +30,8 @@
 
 #define TX_BATCH_SIZE 16
 
+typedef unsigned int __poll_t;
+
 static struct xdp_sock *xdp_sk(struct sock *sk)
 {
 	return (struct xdp_sock *)sk;
