@@ -3429,9 +3429,6 @@ static irqreturn_t fg_delta_esr_irq_handler(int irq, void *data)
 	struct fg_gen4_chip *chip = container_of(fg, struct fg_gen4_chip, fg);
 	int esr_uohms, rc;
 
-	/* OrangeFox: Disable ESR IRQ to speed up boot */
-	return IRQ_HANDLED;
-
 	rc = fg_get_battery_resistance(fg, &esr_uohms);
 	if (rc < 0)
 		return IRQ_HANDLED;
@@ -3917,14 +3914,6 @@ static void esr_calib_work(struct work_struct *work)
 	int rc, fg_esr_meas_diff;
 	s16 esr_raw, esr_char_raw, esr_delta, esr_meas_diff, esr_filtered;
 	u8 buf[2];
-
-	/* OrangeFox: Disable ESR Calibration to speed up boot */
-	if (chip->esr_fast_cal_timer_expired) {
-		pm_relax(fg->dev);
-		chip->esr_fast_cal_timer_expired = false;
-	}
-	vote(fg->awake_votable, ESR_CALIB, false, 0);
-	return;
 
 	mutex_lock(&chip->esr_calib_lock);
 
