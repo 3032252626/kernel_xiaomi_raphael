@@ -11,4 +11,6 @@ config SRCARCH
 
 source "arch/$SRCARCH/Kconfig"
 
+source "utils/Kconfig"
+
 source "techpack/Kconfig"
