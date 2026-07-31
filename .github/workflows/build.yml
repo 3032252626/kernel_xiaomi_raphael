@@ -1,0 +1,78 @@
+name: 编译 raphael 内核 (LXC-Docker + KernelSU)
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.event.repository.owner.id == github.event.sender.id
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 环境变量配置
+      run: |
+        cat config.env >> $GITHUB_ENV
+    
+    - name: 构建编译环境
+      run: |
+        sudo apt-get update
+        sudo -E apt-get -y -qq install git make bc bison ccache openssl zip kmod cpio flex libelf-dev curl libssl-dev libtfm-dev wget device-tree-compiler ca-certificates python3 binutils binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+    
+    - name: 下载Clang编译器
+      run: |
+        git clone -q --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 -b android13-release clang-aosp
+    
+    - name: 开启LXC-Docker配置
+      if: env.ENABLE_LXC_DOCKER == 'true'
+      run: |
+        wget https://github.com/fate-think/LXC-DOCKER-KernelSU_Action/releases/download/1.0.0/add-lxc-docker-custom.sh
+        chmod 755 add-lxc-docker-custom.sh
+        ./add-lxc-docker-custom.sh arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+        echo "# CONFIG_ANDROID_PARANOID_NETWORK is not set" >> arch/arm64/configs/${{ env.KERNEL_CONFIG }}
+    
+    - name: 添加runc补丁
+      run: |
+        wget https://github.com/fate-think/LXC-DOCKER-KernelSU_Action/releases/download/1.0.0/runcpatch.sh
+        chmod a+x runcpatch.sh
+        if [ -f kernel/cgroup.c ]; then
+          ./runcpatch.sh kernel/cgroup.c
+        fi
+        if [ -f kernel/cgroup/cgroup.c ]; then
+          ./runcpatch.sh kernel/cgroup/cgroup.c
+        fi
+    
+    - name: 配置KernelSU
+      if: env.ENABLE_KERNELSU == 'true'
+      run: |
+        curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KERNELSU_TAG }}
+    
+    - name: ccache缓存
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: build-raphael-kernel
+        max-size: 2G
+    
+    - name: 编译内核
+      run: |
+        export PATH=$GITHUB_WORKSPACE/clang-aosp/clang-r450784d/bin:$PATH
+        export KBUILD_BUILD_HOST=Marvis
+        export KBUILD_BUILD_USER=3032252626
+        make -s -j$(nproc --all) O=out ARCH=arm64 ${{ env.KERNEL_CONFIG }}
+        make -j$(nproc --all) CC="ccache clang" O=out ARCH=arm64 CLANG_TRIPLE="aarch64-linux-gnu-" CROSS_COMPILE="aarch64-linux-gnu-" CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+    
+    - name: 打包内核
+      run: |
+        git clone https://github.com/osm0sis/AnyKernel3
+        sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+        sed -i 's!block=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!block=/dev/block/bootdevice/by-name/boot;!g' AnyKernel3/anykernel.sh
+        sed -i 's/is_slot_device=1;/is_slot_device=0;/g' AnyKernel3/anykernel.sh
+        cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+        rm -rf AnyKernel3/.git* AnyKernel3/README.md
+        rm -rf AnyKernel3/ramdisk AnyKernel3/modules AnyKernel3/patch
+    
+    - name: 上传Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.KERNEL_ZIP_NAME }}
+        path: AnyKernel3/*
