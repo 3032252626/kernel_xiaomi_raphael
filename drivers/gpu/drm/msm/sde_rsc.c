@@ -1810,6 +1810,10 @@ static int sde_rsc_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, rsc);
+
+	/* boot guard: block mode2 entry for 60s after boot */
+	rsc->boot_guard_jiffies = jiffies + msecs_to_jiffies(60000);
+
 	of_property_read_u32(pdev->dev.of_node, "qcom,sde-rsc-version",
 								&rsc->version);
 

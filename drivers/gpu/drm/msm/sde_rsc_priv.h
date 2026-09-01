@@ -231,6 +231,8 @@ struct sde_rsc_priv {
 	struct sde_rsc_hw_ops hw_ops;
 	bool power_collapse;
 	bool power_collapse_block;
+	unsigned long boot_guard_jiffies;
+	/* boot guard: block mode2 entry during early boot */
 	struct sde_rsc_client *primary_client;
 
 	u32 single_tcs_execution_time;

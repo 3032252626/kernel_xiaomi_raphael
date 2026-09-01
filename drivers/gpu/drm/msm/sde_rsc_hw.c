@@ -536,6 +536,13 @@ static int sde_rsc_mode2_entry(struct sde_rsc_priv *rsc)
 	int rc = 0, i;
 	u32 reg;
 
+	/* boot guard: keep RSC in mode-0 during early boot to avoid
+	 * abnormal blank from ROM HAL racing DSI command-mode transmission,
+	 * which would fail gdsc power-down and wedge the RSC wrapper.
+	 */
+	if (time_before(jiffies, rsc->boot_guard_jiffies))
+		return 0;
+
 	if (rsc->power_collapse_block)
 		return -EINVAL;
 
