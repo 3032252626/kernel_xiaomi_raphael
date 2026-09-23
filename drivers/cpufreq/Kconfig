@@ -401,4 +401,11 @@ config QORIQ_CPUFREQ
 	  which are capable of changing the CPU's frequency dynamically.
 
 endif
+
+config ARM_QCOM_CPUFREQ_HW
+	bool "QCOM CPUFreq HW driver"
+	depends on ARCH_QCOM || COMPILE_TEST
+	help
+	  Support for the CPUFreq HW driver on QCOM platforms.
+
 endmenu
