@@ -143,11 +143,12 @@ static unsigned int
 qcom_cpufreq_hw_fast_switch(struct cpufreq_policy *policy,
 			    unsigned int target_freq)
 {
-	unsigned int index;
+	int index;
 
-	/* 4.14 无 policy->cached_resolved_idx，改用频表反查 */
-	if (cpufreq_frequency_table_target(policy, target_freq,
-					   CPUFREQ_RELATION_L, &index))
+	/* 4.14 无 policy->cached_resolved_idx，改用频表反查（4.14 签名：返回 index） */
+	index = cpufreq_frequency_table_target(policy, target_freq,
+					       CPUFREQ_RELATION_L);
+	if (index < 0)
 		return 0;
 
 	if (qcom_cpufreq_hw_target_index(policy, index))
@@ -214,14 +215,16 @@ static void qcom_cpufreq_ready(struct cpufreq_policy *policy)
 	 * For now, just loading the cooling device;
 	 * thermal DT code takes care of matching them.
 	 */
+#ifdef CONFIG_THERMAL_OF
 	if (of_find_property(np, "#cooling-cells", NULL)) {
-		cdev[cpu] = of_cpufreq_cooling_register(policy);
+		cdev[cpu] = of_cpufreq_cooling_register(np, policy);
 		if (IS_ERR(cdev[cpu])) {
 			pr_err("running cpufreq for CPU%d without cooling dev: %ld\n",
 			       cpu, PTR_ERR(cdev[cpu]));
 			cdev[cpu] = NULL;
 		}
 	}
+#endif
 
 	of_node_put(np);
 }
@@ -490,16 +493,8 @@ static int qcom_cpufreq_hw_driver_probe(struct platform_device *pdev)
 
 static int qcom_cpufreq_hw_driver_remove(struct platform_device *pdev)
 {
-	struct device *cpu_dev;
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		cpu_dev = get_cpu_device(cpu);
-		if (!cpu_dev)
-			continue;
-
-		dev_pm_opp_remove_all_dynamic(cpu_dev);
-	}
+	/* 4.14 无 dev_pm_opp_remove_all_dynamic，改用 cpumask 表级移除 */
+	dev_pm_opp_cpumask_remove_table(cpu_possible_mask);
 
 	return cpufreq_unregister_driver(&cpufreq_qcom_hw_driver);
 }
