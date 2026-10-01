@@ -30,6 +30,7 @@
 #include <linux/freezer.h>
 #include <linux/irq.h>
 #include <linux/list_sort.h>
+#include <linux/timer.h>
 #include "../sched/sched.h"
 #include "internals.h"
 
@@ -45,6 +46,12 @@
  * the number of interrupts scaled to the CPU's capacity.
  */
 #define IRQ_SCALED_THRESH CONFIG_IRQ_SBALANCE_THRESH
+
+/*
+ * 4.14(msm) 的 irq_can_set_affinity() 定义在 kernel/irq/manage.c 里但未在
+ * 头文件中导出：这里自行声明，用以替代新版内核中的 __irq_can_set_affinity()。
+ */
+extern int irq_can_set_affinity(unsigned int irq);
 
 struct bal_irq {
 	struct list_head node;
@@ -119,7 +126,8 @@ static bool update_irq_data(struct bal_irq *bi, int *cpu)
 	 * actual affinity of the IRQ. Therefore, we check the last CPU that the
 	 * IRQ fired upon in order to determine its actual affinity.
 	 */
-	*cpu = READ_ONCE(desc->last_cpu);
+	/* 4.14(msm) 的 irq_desc 无 last_cpu 字段，退化为取该 IRQ 有效亲和掩码的首 CPU */
+	*cpu = cpumask_first(irq_data_get_effective_affinity_mask(&desc->irq_data));
 	if (*cpu >= nr_cpu_ids)
 		return false;
 
@@ -245,7 +253,7 @@ static void balance_irqs(void)
 
 	list_for_each_entry_rcu(bi, &bal_irq_list, node) {
 		/* Consider this IRQ for balancing if it's movable */
-		if (!__irq_can_set_affinity(bi->desc))
+		if (!irq_can_set_affinity(bi->desc->irq_data.irq))
 			continue;
 
 		if (!update_irq_data(bi, &cpu))
@@ -371,7 +379,14 @@ static void sbalance_wait(long poll_jiffies)
 	freezer_do_not_count();
 	__set_current_state(TASK_IDLE);
 	timer.task = current;
-	timer_setup_on_stack(&timer.timer, process_timeout, TIMER_DEFERRABLE);
+#ifdef CONFIG_CFI_CLANG
+	timer.timer.__function = process_timeout;
+	__setup_timer_on_stack(&timer.timer, __timer_callback,
+			       (TIMER_DATA_TYPE)&timer.timer, TIMER_DEFERRABLE);
+#else
+	__setup_timer_on_stack(&timer.timer, (TIMER_FUNC_TYPE)process_timeout,
+			       (TIMER_DATA_TYPE)&timer.timer, TIMER_DEFERRABLE);
+#endif
 	timer.timer.expires = jiffies + poll_jiffies;
 	add_timer(&timer.timer);
 	schedule();
