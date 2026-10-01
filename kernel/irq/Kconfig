@@ -136,4 +136,30 @@ config GENERIC_IRQ_DEBUGFS
 
 	  If you don't know what to do here, say N.
 
+config IRQ_SBALANCE
+	bool "SBalance IRQ balancer"
+	depends on SMP
+	default n
+	---help---
+	  Polls interrupts every few milliseconds and moves IRQs away from the
+	  most interrupt-heavy CPU towards the least interrupt-heavy CPUs.
+
+if IRQ_SBALANCE
+
+config IRQ_SBALANCE_POLL_MSEC
+	int "IRQ balance polling interval (ms)"
+	default 3000
+
+config IRQ_SBALANCE_THRESH
+	int "IRQ balance threshold (number of interrupts)"
+	default 1024
+
+config SBALANCE_EXCLUDE_CPUS
+	string "CPUs excluded from IRQ balancing"
+	default ""
+	---help---
+	  Comma-separated cpulist (e.g. "0,1"). Leave empty to balance all CPUs.
+
+endif
+
 endmenu
